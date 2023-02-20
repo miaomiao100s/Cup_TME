@@ -1,0 +1,112 @@
+setwd("D:/Cuproptosis/")
+library(data.table)
+library(tibble)  
+
+expr= fread(file='TCGA-HNSC.htseq_fpkm.tsv',header = T,sep = '\t')
+expr=column_to_rownames(expr,var = 'Ensembl_ID')
+max(expr)
+##变TPM
+expr = 2^expr -1
+max(expr)
+fpkmToTpm <- function(fpkm)
+{
+  exp(log(fpkm) - log(sum(fpkm)) + log(1e6))
+}
+exprSet <- as.data.frame(apply(expr,2,fpkmToTpm))
+library(dplyr)
+library(tibble)
+exprSet = rownames_to_column(exprSet, var ='gene_id')
+library(tidyr)
+exprSet <- exprSet %>% 
+  tidyr::separate(gene_id,into = c("gene_id"),sep="\\.")
+
+load('gtf_df.Rdata')
+
+
+###提取mRNA
+mRNA_exprSet <- gtf_df %>% 
+  dplyr::filter(type=="gene",gene_biotype=="protein_coding") %>% 
+  dplyr::select(c(gene_name,gene_id,gene_biotype)) %>% 
+  dplyr::inner_join(exprSet,by ="gene_id") %>% 
+  tidyr::unite(gene_id,gene_name,gene_id,gene_biotype,sep = " | ")
+
+exprSet_mRNA <-mRNA_exprSet %>%
+  tidyr::separate(gene_id,c('gene_name','gene_id','gene_biotype'),
+                  sep = " \\| ")
+exprSet_mRNA<- exprSet_mRNA[,-c(2,3)]
+exprSet_mRNA<-exprSet_mRNA[exprSet_mRNA$gene_name != 'NA',]
+rownames(exprSet_mRNA)=NULL
+#相同探针取平均值
+exprSet_tcga_mRNA<-aggregate(x=exprSet_mRNA[,2:(ncol(exprSet_mRNA))],by=list(exprSet_mRNA$gene_name),FUN=mean)
+exprSet_tcga_mRNA <- column_to_rownames(exprSet_tcga_mRNA, var='Group.1')
+exprSet_tcga_mRNA=log2(exprSet_tcga_mRNA+1)
+max(exprSet_tcga_mRNA)
+#mRNA注释
+save(exprSet_tcga_mRNA,file = 'HNSC_tpm.Rdata')
+
+
+###########寻找预后相关的CRGs##############
+library(boot)
+library(survival) 
+library(limma) 
+pFilter= 0.05         #显著性过滤条件
+           
+
+
+cop=read.table('copper.txt')
+library(tidyverse)
+data=exprSet_tcga_mRNA[rownames(exprSet_tcga_mRNA) %in% cop,]
+suv=read.table('TCGA-HNSC.survival .tsv',row.names = 1,header = T,check.names = F)
+cli=dplyr::select(suv,'OS.time','OS')
+colnames(cli)=c("futime", "fustat")
+
+
+
+sameSample=intersect(row.names(data),row.names(cli))
+data=data[sameSample,]
+cli=cli[sameSample,]
+out=cbind(cli,data)
+out=cbind(id=row.names(out),out)
+## 写出GPR的基础矩阵
+write.table(out,file="expTime.txt",sep="\t",row.names=F,quote=F)
+rt=read.table("expTime.txt", header=T, sep="\t", check.names=F, row.names=1)     #读取输入文件
+
+
+##单因素cox分析
+outTab=data.frame()
+sigGenes=c("futime","fustat")
+for(gene in colnames(rt[,3:ncol(rt)])){
+  set.seed(12345)
+  cox=coxph(Surv(futime, fustat) ~ rt[,gene], data = rt)
+  coxSummary = summary(cox)
+  coxP=coxSummary$coefficients[,"Pr(>|z|)"]
+  if(coxP<pFilter){
+    sigGenes=c(sigGenes,gene)
+    outTab=rbind(outTab,
+                 cbind(gene=gene,
+                       HR=coxSummary$conf.int[,"exp(coef)"],
+                       HR.95L=coxSummary$conf.int[,"lower .95"],
+                       HR.95H=coxSummary$conf.int[,"upper .95"],
+                       pvalue=coxP))
+    print(coxP)
+  }
+}
+
+
+#输出单因素结果
+write.table(outTab,file="uniCox_gpr.txt",sep="\t",row.names=F,quote=F)
+surSigExp=rt[,sigGenes]
+surSigExp=cbind(id=row.names(surSigExp),surSigExp)
+write.table(surSigExp,file="uniSigExp_gpr.txt",sep="\t",row.names=F,quote=F)
+
+
+
+## 构建参数
+coef=boot_results$t0
+sd=as.data.frame(boot_results$t)
+sd=apply(sd, 2, sd)  # 针对sd的每一列做标准差计算
+ratio=coef/sd
+
+Ano=data.frame('Coef'=coef,'boot_SD'=sd,'Coef\\/boot_SD'=ratio)   
+write.csv(Ano,file= 'Ano_coef.csv',quote = F)
+
