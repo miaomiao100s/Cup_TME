@@ -67,7 +67,6 @@ data=data[sameSample,]
 cli=cli[sameSample,]
 out=cbind(cli,data)
 out=cbind(id=row.names(out),out)
-## 写出GPR的基础矩阵
 write.table(out,file="expTime.txt",sep="\t",row.names=F,quote=F)
 rt=read.table("expTime.txt", header=T, sep="\t", check.names=F, row.names=1)     #读取输入文件
 
@@ -76,7 +75,6 @@ rt=read.table("expTime.txt", header=T, sep="\t", check.names=F, row.names=1)    
 outTab=data.frame()
 sigGenes=c("futime","fustat")
 for(gene in colnames(rt[,3:ncol(rt)])){
-  set.seed(12345)
   cox=coxph(Surv(futime, fustat) ~ rt[,gene], data = rt)
   coxSummary = summary(cox)
   coxP=coxSummary$coefficients[,"Pr(>|z|)"]
